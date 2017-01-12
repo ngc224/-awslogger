@@ -151,6 +151,7 @@ func (logger *AwsLogger) Write() *AwsLogger {
 	logger.sequenceToken = events.NextSequenceToken
 	logger.logEvents = []*cloudwatchlogs.InputLogEvent{}
 	logger.messageByte = 0
+	logger.eventsNumber = 0
 	logger.Err = nil
 
 	return logger
