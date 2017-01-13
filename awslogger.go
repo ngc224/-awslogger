@@ -1,7 +1,6 @@
 package awslogger
 
 import (
-	"errors"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -10,29 +9,33 @@ import (
 )
 
 type AwsLogger struct {
-	client               *cloudwatchlogs.CloudWatchLogs
-	logEvents            []*cloudwatchlogs.InputLogEvent
-	logGroupName         *string
-	logStreamName        *string
-	sequenceToken        *string
-	messageByte          int
-	eventsNumber         int
-	WriteMessageByteSize int
-	WriteEventsNumber    int
-	Err                  error
+	client                   *cloudwatchlogs.CloudWatchLogs
+	eventsInputs             []eventsInput
+	eventsInput              eventsInput
+	logGroupName             *string
+	logStreamName            *string
+	sequenceToken            *string
+	EventsInputLimitByteSize int
+	EventsInputLimitNumber   int
+}
+
+type eventsInput struct {
+	events   []*cloudwatchlogs.InputLogEvent
+	byteSize int
+	number   int
 }
 
 var (
-	maximumMessageByteSize = 1048576 - 26
-	maximumEventsNumber    = 10000
+	eventsInputMaxByteSize = 1048576 - 26
+	eventsInputMaxNumber   = 10000
 )
 
-func New(logGroupName, logStreamName string, conf *aws.Config) (*AwsLogger, error) {
+func New(logGroupName, logStreamName string, cfgs ...*aws.Config) (*AwsLogger, error) {
 	logger := &AwsLogger{
-		logGroupName:         &logGroupName,
-		logStreamName:        &logStreamName,
-		WriteMessageByteSize: maximumMessageByteSize,
-		WriteEventsNumber:    maximumEventsNumber,
+		logGroupName:             &logGroupName,
+		logStreamName:            &logStreamName,
+		EventsInputLimitByteSize: eventsInputMaxByteSize,
+		EventsInputLimitNumber:   eventsInputMaxNumber,
 	}
 
 	sess, err := session.NewSession()
@@ -41,7 +44,7 @@ func New(logGroupName, logStreamName string, conf *aws.Config) (*AwsLogger, erro
 		return nil, err
 	}
 
-	logger.client = cloudwatchlogs.New(sess, conf)
+	logger.client = cloudwatchlogs.New(sess, cfgs...)
 	groups, err := logger.client.DescribeLogGroups(&cloudwatchlogs.DescribeLogGroupsInput{})
 
 	if err != nil {
@@ -99,60 +102,79 @@ func New(logGroupName, logStreamName string, conf *aws.Config) (*AwsLogger, erro
 	return logger, nil
 }
 
-func (logger *AwsLogger) Put(message string) *AwsLogger {
-	if logger.eventsNumber == maximumEventsNumber {
-		logger.Err = errors.New("The maximum number of events")
-		return logger
+func (logger *AwsLogger) switchEventsInput() {
+	logger.eventsInputs = append(logger.eventsInputs, logger.eventsInput)
+	logger.eventsInput = eventsInput{}
+}
+
+func (logger *AwsLogger) IsEventsInputs() bool {
+	return len(logger.eventsInputs) > 0
+}
+
+func (logger *AwsLogger) Put(message string, timestamps ...int64) *AwsLogger {
+	if logger.eventsInput.number >= logger.EventsInputLimitNumber {
+		logger.switchEventsInput()
 	}
 
-	if (logger.messageByte + len(message)) > maximumMessageByteSize {
-		logger.Err = errors.New("The maximum batch size")
-		return logger
+	if (logger.eventsInput.byteSize + len(message)) > logger.EventsInputLimitByteSize {
+		logger.switchEventsInput()
 	}
 
-	logger.messageByte += len(message)
-	logger.eventsNumber++
+	timestamp := time.Now().UnixNano() / int64(time.Millisecond)
 
-	logger.logEvents = append(logger.logEvents, &cloudwatchlogs.InputLogEvent{
+	if len(timestamps) > 0 {
+		timestamp = timestamps[0]
+	}
+
+	logger.eventsInput.byteSize += len(message)
+	logger.eventsInput.number++
+	logger.eventsInput.events = append(logger.eventsInput.events, &cloudwatchlogs.InputLogEvent{
 		Message:   aws.String(message),
-		Timestamp: aws.Int64(time.Now().UnixNano() / int64(time.Millisecond)),
+		Timestamp: aws.Int64(timestamp),
 	})
 
 	return logger
 }
 
-func (logger *AwsLogger) IsMaxPut() bool {
-	if logger.eventsNumber >= logger.WriteEventsNumber {
-		return true
+func (logger *AwsLogger) InputEvents() []*cloudwatchlogs.InputLogEvent {
+	events := []*cloudwatchlogs.InputLogEvent{}
+
+	for _, v := range logger.eventsInputs {
+		events = append(events, v.events...)
 	}
 
-	if logger.messageByte >= logger.WriteMessageByteSize {
-		return true
-	}
-
-	return false
+	return append(events, logger.eventsInput.events...)
 }
 
-func (logger *AwsLogger) Write() *AwsLogger {
-	events, err := logger.client.PutLogEvents(
-		&cloudwatchlogs.PutLogEventsInput{
-			LogEvents:     logger.logEvents,
-			LogGroupName:  logger.logGroupName,
-			LogStreamName: logger.logStreamName,
-			SequenceToken: logger.sequenceToken,
-		},
-	)
+func (logger *AwsLogger) Write() error {
+	eventsInputs := logger.eventsInputs
 
-	if err != nil {
-		logger.Err = err
-		return logger
+	if len(logger.eventsInput.events) > 0 {
+		eventsInputs = append(eventsInputs, logger.eventsInput)
 	}
 
-	logger.sequenceToken = events.NextSequenceToken
-	logger.logEvents = []*cloudwatchlogs.InputLogEvent{}
-	logger.messageByte = 0
-	logger.eventsNumber = 0
-	logger.Err = nil
+	logger.eventsInputs = []eventsInput{}
+	logger.eventsInput = eventsInput{}
 
-	return logger
+	var writeErr error
+
+	for _, v := range eventsInputs {
+		resp, err := logger.client.PutLogEvents(
+			&cloudwatchlogs.PutLogEventsInput{
+				LogEvents:     v.events,
+				LogGroupName:  logger.logGroupName,
+				LogStreamName: logger.logStreamName,
+				SequenceToken: logger.sequenceToken,
+			},
+		)
+
+		if err != nil {
+			writeErr = err
+			logger.eventsInputs = append(logger.eventsInputs, v)
+		}
+
+		logger.sequenceToken = resp.NextSequenceToken
+	}
+
+	return writeErr
 }
