@@ -1,6 +1,10 @@
 package awslogger
 
 import (
+	"bufio"
+	"encoding/json"
+	"io"
+	"os"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -107,7 +111,7 @@ func (logger *AwsLogger) switchEventsInput() {
 	logger.eventsInput = eventsInput{}
 }
 
-func (logger *AwsLogger) IsEventsInputs() bool {
+func (logger *AwsLogger) IsLimit() bool {
 	return len(logger.eventsInputs) > 0
 }
 
@@ -134,16 +138,6 @@ func (logger *AwsLogger) Put(message string, timestamps ...int64) *AwsLogger {
 	})
 
 	return logger
-}
-
-func (logger *AwsLogger) InputEvents() []*cloudwatchlogs.InputLogEvent {
-	events := []*cloudwatchlogs.InputLogEvent{}
-
-	for _, v := range logger.eventsInputs {
-		events = append(events, v.events...)
-	}
-
-	return append(events, logger.eventsInput.events...)
 }
 
 func (logger *AwsLogger) Write() error {
@@ -177,4 +171,70 @@ func (logger *AwsLogger) Write() error {
 	}
 
 	return writeErr
+}
+
+func (logger *AwsLogger) WriteFile(filename string) error {
+	file, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+
+	if err != nil {
+		return err
+	}
+
+	defer file.Close()
+
+	writer := bufio.NewWriter(file)
+	newLine := []byte("\n")
+
+	events := []*cloudwatchlogs.InputLogEvent{}
+
+	for _, v := range logger.eventsInputs {
+		events = append(events, v.events...)
+	}
+
+	events = append(events, logger.eventsInput.events...)
+	data, err := json.Marshal(events)
+
+	if err != nil {
+		return err
+	}
+
+	writer.Write(append(data, newLine...))
+
+	if err := writer.Flush(); err != nil {
+		return err
+	}
+
+	logger.eventsInputs = []eventsInput{}
+	logger.eventsInput = eventsInput{}
+
+	return nil
+}
+
+func (logger *AwsLogger) ReadFile(filename string) error {
+	fp, err := os.Open(filename)
+
+	if err != nil {
+		return err
+	}
+
+	d := json.NewDecoder(fp)
+	events := []*cloudwatchlogs.InputLogEvent{}
+
+	for {
+		err := d.Decode(&events)
+
+		if err != nil {
+			if err == io.EOF {
+				break
+			} else {
+				return err
+			}
+		}
+
+		for _, v := range events {
+			logger.Put(*v.Message, *v.Timestamp)
+		}
+	}
+
+	return nil
 }

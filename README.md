@@ -1,4 +1,4 @@
-# AwsLogger
+# awslogger
 Logger to write to AWS CloudWatch Logs
 
 ### Usage
@@ -22,16 +22,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := logger.Put("AAA").Put("BBB").Put("CCC").Put("DDD").Put("EEE").Write().Err; err != nil {
-		panic(err)
-	}
+	logger.Put("AAA").Put("BBB").Put("CCC").Put("DDD").Put("EEE").Write()
 
 	for {
 		logger.Put("AAABBBCCCDDDEEE")
 
-		if logger.IsMaxPut() {
-			if err := logger.Write().Err; err != nil {
-				panic(err)
+		if logger.IsLimit() {
+			if err := logger.Write(); err != nil {
+				logger.WriteFile("buffer.json")
 			}
 			break
 		}
