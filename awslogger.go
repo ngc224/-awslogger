@@ -13,14 +13,14 @@ import (
 )
 
 type AwsLogger struct {
-	client                   *cloudwatchlogs.CloudWatchLogs
-	eventsInputs             []eventsInput
-	eventsInput              eventsInput
-	logGroupName             *string
-	logStreamName            *string
-	sequenceToken            *string
-	EventsInputLimitByteSize int
-	EventsInputLimitNumber   int
+	client                *cloudwatchlogs.CloudWatchLogs
+	eventsInputs          []eventsInput
+	eventsInput           eventsInput
+	logGroupName          *string
+	logStreamName         *string
+	sequenceToken         *string
+	OneWriteLimitByteSize int
+	OneWriteLimitNumber   int
 }
 
 type eventsInput struct {
@@ -30,16 +30,16 @@ type eventsInput struct {
 }
 
 var (
-	eventsInputMaxByteSize = 1048576 - 26
-	eventsInputMaxNumber   = 10000
+	oneWritetMaxByteSize = 1048576 - 26
+	oneWritetMaxNumber   = 10000
 )
 
 func New(logGroupName, logStreamName string, cfgs ...*aws.Config) (*AwsLogger, error) {
 	logger := &AwsLogger{
-		logGroupName:             &logGroupName,
-		logStreamName:            &logStreamName,
-		EventsInputLimitByteSize: eventsInputMaxByteSize,
-		EventsInputLimitNumber:   eventsInputMaxNumber,
+		logGroupName:          &logGroupName,
+		logStreamName:         &logStreamName,
+		OneWriteLimitByteSize: oneWritetMaxByteSize,
+		OneWriteLimitNumber:   oneWritetMaxNumber,
 	}
 
 	sess, err := session.NewSession()
@@ -111,16 +111,16 @@ func (logger *AwsLogger) switchEventsInput() {
 	logger.eventsInput = eventsInput{}
 }
 
-func (logger *AwsLogger) IsLimit() bool {
+func (logger *AwsLogger) IsWrite() bool {
 	return len(logger.eventsInputs) > 0
 }
 
 func (logger *AwsLogger) Put(message string, timestamps ...int64) *AwsLogger {
-	if logger.eventsInput.number >= logger.EventsInputLimitNumber {
+	if logger.eventsInput.number >= logger.OneWriteLimitNumber {
 		logger.switchEventsInput()
 	}
 
-	if (logger.eventsInput.byteSize + len(message)) > logger.EventsInputLimitByteSize {
+	if (logger.eventsInput.byteSize + len(message)) > logger.OneWriteLimitByteSize {
 		logger.switchEventsInput()
 	}
 
@@ -173,7 +173,7 @@ func (logger *AwsLogger) Write() error {
 	return writeErr
 }
 
-func (logger *AwsLogger) WriteFile(filename string) error {
+func (logger *AwsLogger) WriteBufferFile(filename string) error {
 	file, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
 
 	if err != nil {
@@ -184,7 +184,6 @@ func (logger *AwsLogger) WriteFile(filename string) error {
 
 	writer := bufio.NewWriter(file)
 	newLine := []byte("\n")
-
 	events := []*cloudwatchlogs.InputLogEvent{}
 
 	for _, v := range logger.eventsInputs {
@@ -198,7 +197,9 @@ func (logger *AwsLogger) WriteFile(filename string) error {
 		return err
 	}
 
-	writer.Write(append(data, newLine...))
+	if _, err := writer.Write(append(data, newLine...)); err != nil {
+		return err
+	}
 
 	if err := writer.Flush(); err != nil {
 		return err
@@ -210,7 +211,7 @@ func (logger *AwsLogger) WriteFile(filename string) error {
 	return nil
 }
 
-func (logger *AwsLogger) ReadFile(filename string) error {
+func (logger *AwsLogger) ReadBufferFile(filename string) error {
 	fp, err := os.Open(filename)
 
 	if err != nil {

@@ -24,12 +24,16 @@ func main() {
 
 	logger.Put("AAA").Put("BBB").Put("CCC").Put("DDD").Put("EEE").Write()
 
+	// Set one write limits
+	logger.OneWriteLimitNumber = 5000
+	logger.OneWriteLimitByteSize = 512000
+
 	for {
 		logger.Put("AAABBBCCCDDDEEE")
 
-		if logger.IsLimit() {
+		if logger.IsWrite() {
 			if err := logger.Write(); err != nil {
-				logger.WriteFile("buffer.json")
+				logger.WriteBufferFile("awslogger_buffer.json")
 			}
 			break
 		}
